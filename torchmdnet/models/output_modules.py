@@ -11,7 +11,7 @@ from torchmdnet.utils import atomic_masses
 from torchmdnet.extensions import is_current_stream_capturing
 from warnings import warn
 
-__all__ = ["Scalar", "DipoleMoment", "ElectronicSpatialExtent"]
+__all__ = ["Scalar", "DipoleMoment", "ElectronicSpatialExtent", "ScalarandVector"]
 
 
 class OutputModel(nn.Module, metaclass=ABCMeta):
@@ -80,7 +80,46 @@ class Scalar(OutputModel):
         self.output_network[2].bias.data.fill_(0)
 
     def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch):
-        return self.output_network(x)
+        return self.output_network(x), torch.empty(0)
+    
+class EquivariantScalarandVector(OutputModel):
+    def __init__(
+        self,
+        hidden_channels,
+        activation="silu",
+        allow_prior_model=True,
+        reduce_op="sum",
+        dtype=torch.float,
+    ):
+        super(EquivariantScalarandVector, self).__init__(
+            allow_prior_model=allow_prior_model, reduce_op=reduce_op
+        )
+        self.output_network = nn.ModuleList(
+            [
+                GatedEquivariantBlock(
+                    hidden_channels,
+                    hidden_channels // 2,
+                    activation=activation,
+                    scalar_activation=True,
+                    dtype=dtype,
+                ),
+                GatedEquivariantBlock(
+                    hidden_channels // 2, 1, activation=activation, dtype=dtype
+                ),
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.output_network:
+            layer.reset_parameters()
+
+    def pre_reduce(self, x, v, z, pos, batch):
+        for layer in self.output_network:
+            x, v = layer(x, v)
+        # include v in output to make sure all parameters have a gradient
+        return x, v
 
 
 class EquivariantScalar(OutputModel):
@@ -120,7 +159,7 @@ class EquivariantScalar(OutputModel):
         for layer in self.output_network:
             x, v = layer(x, v)
         # include v in output to make sure all parameters have a gradient
-        return x + v.sum() * 0
+        return x + v.sum() * 0, torch.empty(0)
 
 
 class DipoleMoment(Scalar):
@@ -144,7 +183,7 @@ class DipoleMoment(Scalar):
         mass = self.atomic_mass[z].view(-1, 1)
         c = scatter(mass * pos, batch, dim=0) / scatter(mass, batch, dim=0)
         x = x * (pos - c[batch])
-        return x
+        return x, torch.empty(0)
 
     def post_reduce(self, x):
         return torch.norm(x, dim=-1, keepdim=True)
@@ -172,7 +211,7 @@ class EquivariantDipoleMoment(EquivariantScalar):
         mass = self.atomic_mass[z].view(-1, 1)
         c = scatter(mass * pos, batch, dim=0) / scatter(mass, batch, dim=0)
         x = x * (pos - c[batch])
-        return x + v.squeeze()
+        return x + v.squeeze(), torch.empty(0)
 
     def post_reduce(self, x):
         return torch.norm(x, dim=-1, keepdim=True)
@@ -210,7 +249,7 @@ class ElectronicSpatialExtent(OutputModel):
         c = scatter(mass * pos, batch, dim=0) / scatter(mass, batch, dim=0)
 
         x = torch.norm(pos - c[batch], dim=1, keepdim=True) ** 2 * x
-        return x
+        return x, torch.empty(0)
 
 
 class EquivariantElectronicSpatialExtent(ElectronicSpatialExtent):
@@ -232,4 +271,4 @@ class EquivariantVectorOutput(EquivariantScalar):
     def pre_reduce(self, x, v, z, pos, batch):
         for layer in self.output_network:
             x, v = layer(x, v)
-        return v.squeeze()
+        return v.squeeze(), torch.empty(0)

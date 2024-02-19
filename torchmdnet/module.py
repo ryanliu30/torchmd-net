@@ -157,7 +157,7 @@ class LNNP(LightningModule):
             0.0, device=self.device
         )
         loss_name = loss_fn.__name__
-        if self.hparams.derivative and "neg_dy" in batch:
+        if (self.hparams.derivative or self.hparams.predict_vectors) and "neg_dy" in batch:
             loss_neg_y = loss_fn(neg_y, batch.neg_dy)
             loss_neg_y = self._update_loss_with_ema(
                 stage, "neg_dy", loss_name, loss_neg_y
@@ -213,7 +213,7 @@ class LNNP(LightningModule):
                 s=batch.s if self.hparams.spin else None,
                 extra_args=extra_args,
             )
-        if self.hparams.derivative and "y" not in batch:
+        if (self.hparams.derivative or self.hparams.predict_vectors) and "y" not in batch:
             # "use" both outputs of the model's forward function but discard the first
             # to only use the negative derivative and avoid 'Expected to have finished reduction
             # in the prior iteration before starting a new one.', which otherwise get's

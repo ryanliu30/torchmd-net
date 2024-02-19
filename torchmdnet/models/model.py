@@ -134,6 +134,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         mean=mean,
         std=std,
         derivative=args["derivative"],
+        predict_vectors=args["predict_vectors"],
         dtype=dtype,
     )
     return model
@@ -292,6 +293,7 @@ class TorchMD_Net(nn.Module):
         mean=None,
         std=None,
         derivative=False,
+        predict_vectors=False,
         dtype=torch.float32,
     ):
         super(TorchMD_Net, self).__init__()
@@ -315,6 +317,7 @@ class TorchMD_Net(nn.Module):
         )
 
         self.derivative = derivative
+        self.predict_vectors = predict_vectors
 
         mean = torch.scalar_tensor(0) if mean is None else mean
         self.register_buffer("mean", mean.to(dtype=dtype))
@@ -385,7 +388,7 @@ class TorchMD_Net(nn.Module):
             z, pos, batch, box=box, q=q, s=s
         )
         # apply the output network
-        x = self.output_model.pre_reduce(x, v, z, pos, batch)
+        x, v = self.output_model.pre_reduce(x, v, z, pos, batch)
 
         # scale by data standard deviation
         if self.std is not None:
@@ -423,6 +426,8 @@ class TorchMD_Net(nn.Module):
             )[0]
             assert dy is not None, "Autograd returned None for the force prediction."
             return y, -dy
+        if self.predict_vectors:
+            return y, v.squeeze(2)
         # Returning an empty tensor allows to decorate this method as always returning two tensors.
         # This is required to overcome a TorchScript limitation, xref https://github.com/openmm/openmm-torch/issues/135
         return y, torch.empty(0)
