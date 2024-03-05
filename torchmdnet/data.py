@@ -206,12 +206,12 @@ class Collater:
         elem = batch[0]
         if self.use_derivative:
             assert hasattr(elem, "y") and hasattr(elem, "neg_dy") 
-            etas = torch.randn(len(batch)) * self.eta
+            etas = torch.randn((len(batch), 3)) * self.eta
             new_batch = []
             for data, eta in zip(batch, etas):
                 new_data = data.clone()
-                new_data.y -= eta
-                new_data.pos += eta * new_data.neg_dy
+                new_data.y -= (eta * new_data.neg_dy).sum()
+                new_data.pos += eta
                 new_batch.append(new_data)
             
         if isinstance(elem, BaseData):
