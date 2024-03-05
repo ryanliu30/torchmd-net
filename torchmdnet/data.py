@@ -3,10 +3,20 @@
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
 
 from os.path import join
+from collections.abc import Mapping
+from typing import Any, List, Optional, Sequence, Union
+
+import torch.utils.data
+from torch.utils.data.dataloader import default_collate
+
+from torch_geometric.data import Batch, Dataset
+from torch_geometric.data.data import BaseData
+from torch_geometric.data.datapipes import DatasetAdapter
+from torch_geometric.typing import TensorFrame, torch_frame
+
 from tqdm import tqdm
 import torch
 from torch.utils.data import Subset
-from torch_geometric.loader import DataLoader
 from lightning import LightningDataModule
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from torchmdnet import datasets
@@ -131,10 +141,12 @@ class DataModule(LightningDataModule):
         shuffle = stage == "train"
         dl = DataLoader(
             dataset=dataset,
+            use_derivative=self.hparams.get("use_derivative", False) and (stage == "train"),
+            eta=self.hparams.get("eta", 0),
             batch_size=batch_size,
             num_workers=self.hparams["num_workers"],
             persistent_workers=True,
-            pin_memory=True,
+            pin_memory=False,
             shuffle=shuffle,
         )
 
@@ -173,3 +185,102 @@ class DataModule(LightningDataModule):
         # compute mean and standard deviation
         self._mean = ys.mean(dim=0)
         self._std = ys.std(dim=0)
+
+class Collater:
+    def __init__(
+        self,
+        dataset: Union[Dataset, Sequence[BaseData], DatasetAdapter],
+        use_derivative: Optional[bool] = False,
+        eta: Optional[float] = 0,
+        follow_batch: Optional[List[str]] = None,
+        exclude_keys: Optional[List[str]] = None,
+    ):
+        self.dataset = dataset
+        self.follow_batch = follow_batch
+        self.exclude_keys = exclude_keys
+        self.use_derivative = use_derivative
+        self.eta = eta
+
+    def __call__(self, batch: List[Any]) -> Any:
+
+        elem = batch[0]
+        if self.use_derivative:
+            assert hasattr(elem, "y") and hasattr(elem, "neg_dy") 
+            etas = torch.randn(len(batch)) * self.eta
+            new_batch = []
+            for data, eta in zip(batch, etas):
+                new_data = data.clone()
+                new_data.y -= eta
+                new_data.pos += eta * new_data.neg_dy
+                new_batch.append(new_data)
+            
+        if isinstance(elem, BaseData):
+            return Batch.from_data_list(
+                batch,
+                follow_batch=self.follow_batch,
+                exclude_keys=self.exclude_keys,
+            )
+        elif isinstance(elem, torch.Tensor):
+            return default_collate(batch)
+        elif isinstance(elem, TensorFrame):
+            return torch_frame.cat(batch, dim=0)
+        elif isinstance(elem, float):
+            return torch.tensor(batch, dtype=torch.float)
+        elif isinstance(elem, int):
+            return torch.tensor(batch)
+        elif isinstance(elem, str):
+            return batch
+        elif isinstance(elem, Mapping):
+            return {key: self([data[key] for data in batch]) for key in elem}
+        elif isinstance(elem, tuple) and hasattr(elem, '_fields'):
+            return type(elem)(*(self(s) for s in zip(*batch)))
+        elif isinstance(elem, Sequence) and not isinstance(elem, str):
+            return [self(s) for s in zip(*batch)]
+
+        raise TypeError(f"DataLoader found invalid type: '{type(elem)}'")
+
+
+class DataLoader(torch.utils.data.DataLoader):
+    r"""A data loader which merges data objects from a
+    :class:`torch_geometric.data.Dataset` to a mini-batch.
+    Data objects can be either of type :class:`~torch_geometric.data.Data` or
+    :class:`~torch_geometric.data.HeteroData`.
+
+    Args:
+        dataset (Dataset): The dataset from which to load the data.
+        batch_size (int, optional): How many samples per batch to load.
+            (default: :obj:`1`)
+        shuffle (bool, optional): If set to :obj:`True`, the data will be
+            reshuffled at every epoch. (default: :obj:`False`)
+        follow_batch (List[str], optional): Creates assignment batch
+            vectors for each key in the list. (default: :obj:`None`)
+        exclude_keys (List[str], optional): Will exclude each key in the
+            list. (default: :obj:`None`)
+        **kwargs (optional): Additional arguments of
+            :class:`torch.utils.data.DataLoader`.
+    """
+    def __init__(
+        self,
+        dataset: Union[Dataset, Sequence[BaseData], DatasetAdapter],
+        batch_size: int = 1,
+        shuffle: bool = False,
+        use_derivative: Optional[bool] = False,
+        eta: Optional[float] = 0,
+        follow_batch: Optional[List[str]] = None,
+        exclude_keys: Optional[List[str]] = None,
+        **kwargs,
+    ):
+        # Remove for PyTorch Lightning:
+        kwargs.pop('collate_fn', None)
+
+        # Save for PyTorch Lightning < 1.6:
+        self.follow_batch = follow_batch
+        self.exclude_keys = exclude_keys
+
+        super().__init__(
+            dataset,
+            batch_size,
+            shuffle,
+            collate_fn=Collater(dataset, use_derivative, eta, follow_batch, exclude_keys),
+            **kwargs,
+        )

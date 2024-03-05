@@ -68,6 +68,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
             num_filters=args["embedding_dimension"],
             aggr=args["aggr"],
             neighbor_embedding=args["neighbor_embedding"],
+            use_pos=args["use_pos"],
             **shared_args,
         )
     elif args["model"] == "transformer":
@@ -384,11 +385,11 @@ class TorchMD_Net(nn.Module):
         if self.derivative:
             pos.requires_grad_(True)
         # run the potentially wrapped representation model
-        x, v, z, pos, batch = self.representation_model(
+        x, v, z, pos, batch, *extra_outputs = self.representation_model(
             z, pos, batch, box=box, q=q, s=s
         )
         # apply the output network
-        x, v = self.output_model.pre_reduce(x, v, z, pos, batch)
+        x, v = self.output_model.pre_reduce(x, v, z, pos, batch, *extra_outputs)
 
         # scale by data standard deviation
         if self.std is not None:
@@ -427,7 +428,7 @@ class TorchMD_Net(nn.Module):
             assert dy is not None, "Autograd returned None for the force prediction."
             return y, -dy
         if self.predict_vectors:
-            return y, v.squeeze(2)
+            return y, v * self.std
         # Returning an empty tensor allows to decorate this method as always returning two tensors.
         # This is required to overcome a TorchScript limitation, xref https://github.com/openmm/openmm-torch/issues/135
         return y, torch.empty(0)

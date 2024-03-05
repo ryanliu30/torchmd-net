@@ -30,7 +30,7 @@ class OutputModel(nn.Module, metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def pre_reduce(self, x, v, z, pos, batch):
+    def pre_reduce(self, x, v, z, pos, batch, *args):
         return
 
     def reduce(self, x, batch):
@@ -79,8 +79,97 @@ class Scalar(OutputModel):
         nn.init.xavier_uniform_(self.output_network[2].weight)
         self.output_network[2].bias.data.fill_(0)
 
-    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch):
+    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch, *args):
         return self.output_network(x), torch.empty(0)
+    
+class ScalarandVector(OutputModel):
+    def __init__(
+        self,
+        hidden_channels,
+        activation="silu",
+        allow_prior_model=True,
+        reduce_op="sum",
+        dtype=torch.float,
+    ):
+        super(ScalarandVector, self).__init__(
+            allow_prior_model=allow_prior_model, reduce_op=reduce_op
+        )
+        act_class = act_class_mapping[activation]
+        self.output_network = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2, dtype=dtype),
+            act_class(),
+            nn.Linear(hidden_channels // 2, 1, dtype=dtype),
+        )
+
+        self.output_vector_network = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2, dtype=dtype),
+            act_class(),
+            nn.Linear(hidden_channels // 2, 3, dtype=dtype),
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.output_network[0].weight)
+        self.output_network[0].bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.output_network[2].weight)
+        self.output_network[2].bias.data.fill_(0)
+
+        nn.init.xavier_uniform_(self.output_vector_network[0].weight)
+        self.output_vector_network[0].bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.output_vector_network[2].weight)
+        self.output_vector_network[2].bias.data.fill_(0)
+
+    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch, *args):
+        return self.output_network(x), self.output_vector_network(x)
+    
+class ScalarandNewtonianVector(OutputModel):
+    def __init__(
+        self,
+        hidden_channels,
+        activation="silu",
+        allow_prior_model=True,
+        reduce_op="sum",
+        dtype=torch.float,
+    ):
+        super(ScalarandNewtonianVector, self).__init__(
+            allow_prior_model=allow_prior_model, reduce_op=reduce_op
+        )
+        act_class = act_class_mapping[activation]
+        self.output_network = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2, dtype=dtype),
+            act_class(),
+            nn.Linear(hidden_channels // 2, 1, dtype=dtype),
+        )
+
+        self.output_vector_network = nn.Sequential(
+            nn.Linear(hidden_channels * 2, hidden_channels, dtype=dtype),
+            act_class(),
+            nn.Linear(hidden_channels, 3, dtype=dtype),
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.output_network[0].weight)
+        self.output_network[0].bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.output_network[2].weight)
+        self.output_network[2].bias.data.fill_(0)
+
+        nn.init.xavier_uniform_(self.output_vector_network[0].weight)
+        self.output_vector_network[0].bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.output_vector_network[2].weight)
+        self.output_vector_network[2].bias.data.fill_(0)
+
+    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch, edge_index, *args):
+
+        return self.output_network(x), scatter(
+            (
+                self.output_vector_network(torch.cat([x[edge_index[0]], x[edge_index[1]]], dim=-1)) - 
+                self.output_vector_network(torch.cat([x[edge_index[1]], x[edge_index[0]]], dim=-1))
+            ), 
+            edge_index[0], reduce="sum"
+        )
     
 class EquivariantScalarandVector(OutputModel):
     def __init__(
@@ -119,7 +208,7 @@ class EquivariantScalarandVector(OutputModel):
         for layer in self.output_network:
             x, v = layer(x, v)
         # include v in output to make sure all parameters have a gradient
-        return x, v
+        return x, v.squeeze(2)
 
 
 class EquivariantScalar(OutputModel):
@@ -176,7 +265,7 @@ class DipoleMoment(Scalar):
         atomic_mass = torch.from_numpy(atomic_masses).to(dtype)
         self.register_buffer("atomic_mass", atomic_mass)
 
-    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch):
+    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch, *args):
         x = self.output_network(x)
 
         # Get center of mass.
@@ -241,7 +330,7 @@ class ElectronicSpatialExtent(OutputModel):
         nn.init.xavier_uniform_(self.output_network[2].weight)
         self.output_network[2].bias.data.fill_(0)
 
-    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch):
+    def pre_reduce(self, x, v: Optional[torch.Tensor], z, pos, batch, *args):
         x = self.output_network(x)
 
         # Get center of mass.

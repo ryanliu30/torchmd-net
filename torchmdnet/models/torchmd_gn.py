@@ -107,6 +107,7 @@ class TorchMD_GN(nn.Module):
         aggr="add",
         dtype=torch.float32,
         box_vecs=None,
+        use_pos=False
     ):
         super(TorchMD_GN, self).__init__()
 
@@ -136,6 +137,7 @@ class TorchMD_GN(nn.Module):
         self.cutoff_upper = cutoff_upper
         self.max_z = max_z
         self.aggr = aggr
+        self.use_pos = use_pos
 
         act_class = act_class_mapping[activation]
 
@@ -180,6 +182,13 @@ class TorchMD_GN(nn.Module):
             )
             self.interactions.append(block)
 
+        if use_pos:
+            self.pos_encoder = nn.Sequential(
+                nn.Linear(3, hidden_channels, dtype=dtype),
+                act_class(),
+                nn.Linear(hidden_channels, hidden_channels, dtype=dtype),
+            )
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -200,6 +209,8 @@ class TorchMD_GN(nn.Module):
         q: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor, Tensor]:
         x = self.embedding(z)
+        if self.use_pos:
+            x += self.pos_encoder(pos)
 
         edge_index, edge_weight, _ = self.distance(pos, batch, box)
         edge_attr = self.distance_expansion(edge_weight)
@@ -212,7 +223,7 @@ class TorchMD_GN(nn.Module):
                 x, edge_index, edge_weight, edge_attr, n_atoms=z.shape[0]
             )
 
-        return x, None, z, pos, batch
+        return x, None, z, pos, batch, edge_index
 
     def __repr__(self):
         return (
